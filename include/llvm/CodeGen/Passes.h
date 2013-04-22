@@ -380,6 +380,12 @@ namespace llvm {
   ///
   FunctionPass *createFastRegisterAllocator();
 
+  /// AIRegisterAllocation Pass - This pass allocates registers using AI heuristics
+  /// The compile time time is increased because we try to find optimal coloring for the
+  /// Interference Graph.
+  FunctionPass *createAIRegisterAllocator();
+
+
   /// BasicRegisterAllocation Pass - This pass implements a degenerate global
   /// register allocator using the basic regalloc framework.
   ///
