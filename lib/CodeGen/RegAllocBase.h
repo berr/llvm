@@ -74,7 +74,7 @@ protected:
 
   // The top-level driver. The output is a VirtRegMap that us updated with
   // physical register assignments.
-  void allocatePhysRegs();
+  virtual void allocatePhysRegs();
 
   // Get a temporary reference to a Spiller instance.
   virtual Spiller &spiller() = 0;
@@ -95,12 +95,12 @@ protected:
   // Use this group name for NamedRegionTimer.
   static const char *TimerGroupName;
 
+  void seedLiveRegs();
+
 public:
   /// VerifyEnabled - True when -verify-regalloc is given.
   static bool VerifyEnabled;
 
-private:
-  void seedLiveRegs();
 };
 
 } // end namespace llvm
