@@ -261,19 +261,20 @@ void RAIA::allocatePhysRegs() {
   int iterations = 0;
   bool alocated = false;
 
+  DEBUG(dbgs() << "Before loop!" << "\n");
   // generate initial sequences
   for (unsigned i = 0, e = MRI->getNumVirtRegs(); i != e; ++i) {
+    DEBUG(dbgs() << "On loop! " << i << "\n");
     unsigned Reg = TargetRegisterInfo::index2VirtReg(i);
-    LiveInterval& VirtReg = LIS->getInterval(Reg);
 
     // Register only used for debug instructions, we can ignore it
     if (MRI->reg_nodbg_empty(Reg)){
-      LIS->removeInterval(VirtReg.reg);
-      // Invalidate previous results, since we may have changed live ranges
-      Matrix->invalidateVirtRegs();
+      DEBUG(dbgs() << "Doing nothing for register: " << Reg << "\n");
       continue;
     }
 
+    DEBUG(dbgs() << "Getting interval for register: " << Reg << "\n");
+    LiveInterval& VirtReg = LIS->getInterval(Reg);
 
     for (int i = 0; i < NUMBER_OF_SOURCES; ++i){
       sources[i].push_back(new RAIARegister(VirtReg));
@@ -307,6 +308,13 @@ void RAIA::allocatePhysRegs() {
       for(i = 0; i < size; ++i){
         RAIARegister* current = sources[source_index][i];
         LiveInterval* Spillable;
+
+
+        if (MRI->reg_nodbg_empty(current->Reg.reg)) {
+          LIS->removeInterval(current->Reg.reg);
+          // Invalidate previous results, since we may have changed live ranges
+        }
+        Matrix->invalidateVirtRegs();
 
         if (!allocateOrGetBestSpillable(current->Reg, &Spillable, ScratchPad)){
           // Do a generic update of the fitness of this Sequence
