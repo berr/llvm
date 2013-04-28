@@ -53,6 +53,9 @@ namespace llvm {
   /// \returns true if this \p Opcode represents an ALU instruction.
   bool isALUInstr(unsigned Opcode) const;
 
+  bool fitsConstReadLimitations(const std::vector<unsigned>&) const;
+  bool canBundle(const std::vector<MachineInstr *> &) const;
+
   /// \breif Vector instructions are instructions that must fill all
   /// instruction slots within an instruction group.
   bool isVector(const MachineInstr &MI) const;
@@ -142,6 +145,7 @@ namespace llvm {
 
   virtual const TargetRegisterClass *getSuperIndirectRegClass() const;
 
+  unsigned getMaxAlusPerClause() const;
 
   ///buildDefaultInstruction - This function returns a MachineInstr with
   /// all the instruction modifiers initialized to their default values.

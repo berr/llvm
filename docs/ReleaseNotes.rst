@@ -64,6 +64,12 @@ Non-comprehensive list of changes in this release
   attributes, which are useful for passing information to code generation. See
   :doc:`HowToUseAttributes` for more details.
 
+* TableGen's syntax for instruction selection patterns has been simplified.
+  Instead of specifying types indirectly with register classes, you should now
+  specify types directly in the input patterns. See ``SparcInstrInfo.td`` for
+  examples of the new syntax. The old syntax using register classes still
+  works, but it will be removed in a future LLVM release.
+
 * ... next change ...
 
 .. NOTE
@@ -90,6 +96,13 @@ in fairly early stages, but we expect successful compilation when:
 Some additional functionality is also implemented, notably DWARF debugging,
 GNU-style thread local storage and inline assembly.
 
+Hexagon Target
+--------------
+
+- Removed support for legacy hexagonv2 and hexagonv3 processor
+  architectures which are no longer in use. Currently supported
+  architectures are hexagonv4 and hexagonv5.
+
 Loop Vectorizer
 ---------------
 
@@ -105,6 +118,15 @@ has the following features:
 - Vectorization of mixed types
 - Vectorization of function calls
 - Partial unrolling during vectorization
+
+The loop vectorizer is now enabled by default for -O3.
+
+SLP Vectorizer
+--------------
+
+LLVM now has a new SLP vectorizer. The new SLP vectorizer is not enabled by
+default but can be enabled using the clang flag -fslp-vectorize. The BB-vectorizer
+can also be enabled using the command line flag -fslp-vectorize-aggressive.
 
 R600 Backend
 ------------

@@ -22,14 +22,16 @@
 #ifndef LLVM_ANALYSIS_TARGETTRANSFORMINFO_H
 #define LLVM_ANALYSIS_TARGETTRANSFORMINFO_H
 
-#include "llvm/CodeGen/ValueTypes.h"
-#include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/Type.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/DataTypes.h"
 
 namespace llvm {
+
+class GlobalValue;
+class Type;
+class User;
+class Value;
 
 /// TargetTransformInfo - This pass provides access to the codegen
 /// interfaces that are needed for IR-level transformations.
@@ -261,6 +263,13 @@ public:
     SK_ExtractSubvector ///< ExtractSubvector Index indicates start offset.
   };
 
+  /// \brief Additonal information about an operand's possible values.
+  enum OperandValueKind {
+    OK_AnyValue,            // Operand can have any value.
+    OK_UniformValue,        // Operand is uniform (splat of a value).
+    OK_UniformConstantValue // Operand is uniform constant.
+  };
+
   /// \return The number of scalar or vector registers that the target has.
   /// If 'Vectors' is true, it returns the number of vector registers. If it is
   /// set to false, it returns the number of scalar registers.
@@ -275,7 +284,9 @@ public:
   virtual unsigned getMaximumUnrollFactor() const;
 
   /// \return The expected cost of arithmetic ops, such as mul, xor, fsub, etc.
-  virtual unsigned getArithmeticInstrCost(unsigned Opcode, Type *Ty) const;
+  virtual unsigned getArithmeticInstrCost(unsigned Opcode, Type *Ty,
+                                  OperandValueKind Opd1Info = OK_AnyValue,
+                                  OperandValueKind Opd2Info = OK_AnyValue) const;
 
   /// \return The cost of a shuffle instruction of kind Kind and of type Tp.
   /// The index and subtype parameters are used by the subvector insertion and

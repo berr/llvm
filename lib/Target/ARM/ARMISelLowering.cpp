@@ -564,6 +564,16 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
     setOperationAction(ISD::FP_ROUND,   MVT::v2f32, Expand);
     setOperationAction(ISD::FP_EXTEND,  MVT::v2f64, Expand);
 
+    // Custom expand long extensions to vectors.
+    setOperationAction(ISD::SIGN_EXTEND, MVT::v8i32,  Custom);
+    setOperationAction(ISD::ZERO_EXTEND, MVT::v8i32,  Custom);
+    setOperationAction(ISD::SIGN_EXTEND, MVT::v4i64,  Custom);
+    setOperationAction(ISD::ZERO_EXTEND, MVT::v4i64,  Custom);
+    setOperationAction(ISD::SIGN_EXTEND, MVT::v16i32, Custom);
+    setOperationAction(ISD::ZERO_EXTEND, MVT::v16i32, Custom);
+    setOperationAction(ISD::SIGN_EXTEND, MVT::v8i64,  Custom);
+    setOperationAction(ISD::ZERO_EXTEND, MVT::v8i64,  Custom);
+
     // NEON does not have single instruction CTPOP for vectors with element
     // types wider than 8-bits.  However, custom lowering can leverage the
     // v8i8/v16i8 vcnt instruction.
@@ -719,7 +729,6 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
       (Subtarget->hasV6Ops() && !Subtarget->isThumb())) {
     // membarrier needs custom lowering; the rest are legal and handled
     // normally.
-    setOperationAction(ISD::MEMBARRIER, MVT::Other, Custom);
     setOperationAction(ISD::ATOMIC_FENCE, MVT::Other, Custom);
     // Custom lowering for 64-bit ops
     setOperationAction(ISD::ATOMIC_LOAD_ADD,  MVT::i64, Custom);
@@ -737,7 +746,6 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
     setInsertFencesForAtomic(true);
   } else {
     // Set them all for expansion, which will force libcalls.
-    setOperationAction(ISD::MEMBARRIER, MVT::Other, Expand);
     setOperationAction(ISD::ATOMIC_FENCE,   MVT::Other, Expand);
     setOperationAction(ISD::ATOMIC_CMP_SWAP,  MVT::i32, Expand);
     setOperationAction(ISD::ATOMIC_SWAP,      MVT::i32, Expand);
@@ -755,8 +763,6 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
     // Unordered/Monotonic case.
     setOperationAction(ISD::ATOMIC_LOAD, MVT::i32, Custom);
     setOperationAction(ISD::ATOMIC_STORE, MVT::i32, Custom);
-    // Since the libcalls include locking, fold in the fences
-    setShouldFoldAtomicFences(true);
   }
 
   setOperationAction(ISD::PREFETCH,         MVT::Other, Custom);
@@ -869,8 +875,6 @@ ARMTargetLowering::ARMTargetLowering(TargetMachine &TM)
   // On ARM arguments smaller than 4 bytes are extended, so all arguments
   // are at least 4 bytes aligned.
   setMinStackArgumentAlignment(4);
-
-  BenefitFromCodePlacementOpt = true;
 
   // Prefer likely predicted branches to selects on out-of-order cores.
   PredictableSelectIsExpensive = Subtarget->isLikeA9();
@@ -1230,7 +1234,8 @@ ARMTargetLowering::LowerCallResult(SDValue Chain, SDValue InFlag,
                                    CallingConv::ID CallConv, bool isVarArg,
                                    const SmallVectorImpl<ISD::InputArg> &Ins,
                                    DebugLoc dl, SelectionDAG &DAG,
-                                   SmallVectorImpl<SDValue> &InVals) const {
+                                   SmallVectorImpl<SDValue> &InVals,
+                                   bool isThisReturn, SDValue ThisVal) const {
 
   // Assign locations to each value returned by this call.
   SmallVector<CCValAssign, 16> RVLocs;
@@ -1243,6 +1248,15 @@ ARMTargetLowering::LowerCallResult(SDValue Chain, SDValue InFlag,
   // Copy all of the result registers out of their specified physreg.
   for (unsigned i = 0; i != RVLocs.size(); ++i) {
     CCValAssign VA = RVLocs[i];
+
+    // Pass 'this' value directly from the argument to return value, to avoid
+    // reg unit interference
+    if (i == 0 && isThisReturn) {
+      assert(!VA.needsCustom() && VA.getLocVT() == MVT::i32 &&
+             "unexpected return calling convention register assignment");
+      InVals.push_back(ThisVal);
+      continue;
+    }
 
     SDValue Val;
     if (VA.needsCustom()) {
@@ -1355,21 +1369,22 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   bool isVarArg                         = CLI.IsVarArg;
 
   MachineFunction &MF = DAG.getMachineFunction();
-  bool IsStructRet    = (Outs.empty()) ? false : Outs[0].Flags.isSRet();
-  bool IsSibCall = false;
+  bool isStructRet    = (Outs.empty()) ? false : Outs[0].Flags.isSRet();
+  bool isThisReturn   = false;
+  bool isSibCall      = false;
   // Disable tail calls if they're not supported.
   if (!EnableARMTailCalls && !Subtarget->supportsTailCall())
     isTailCall = false;
   if (isTailCall) {
     // Check if it's really possible to do a tail call.
     isTailCall = IsEligibleForTailCallOptimization(Callee, CallConv,
-                    isVarArg, IsStructRet, MF.getFunction()->hasStructRetAttr(),
+                    isVarArg, isStructRet, MF.getFunction()->hasStructRetAttr(),
                                                    Outs, OutVals, Ins, DAG);
     // We don't support GuaranteedTailCallOpt for ARM, only automatically
     // detected sibcalls.
     if (isTailCall) {
       ++NumTailCalls;
-      IsSibCall = true;
+      isSibCall = true;
     }
   }
 
@@ -1385,12 +1400,12 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   unsigned NumBytes = CCInfo.getNextStackOffset();
 
   // For tail calls, memory operands are available in our caller's stack.
-  if (IsSibCall)
+  if (isSibCall)
     NumBytes = 0;
 
   // Adjust the stack pointer for the new arguments...
   // These operations are automatically eliminated by the prolog/epilog pass
-  if (!IsSibCall)
+  if (!isSibCall)
     Chain = DAG.getCALLSEQ_START(Chain, DAG.getIntPtrConstant(NumBytes, true));
 
   SDValue StackPtr = DAG.getCopyFromReg(Chain, dl, ARM::SP, getPointerTy());
@@ -1452,6 +1467,13 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                          StackPtr, MemOpChains, Flags);
       }
     } else if (VA.isRegLoc()) {
+      if (realArgIdx == 0 && Flags.isReturned() && Outs[0].VT == MVT::i32) {
+        assert(VA.getLocVT() == MVT::i32 &&
+               "unexpected calling convention register assignment");
+        assert(!Ins.empty() && Ins[0].VT == MVT::i32 &&
+               "unexpected use of 'returned'");
+        isThisReturn = true;
+      }
       RegsToPass.push_back(std::make_pair(VA.getLocReg(), Arg));
     } else if (isByVal) {
       assert(VA.isMemLoc());
@@ -1491,7 +1513,7 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
         MemOpChains.push_back(DAG.getNode(ARMISD::COPY_STRUCT_BYVAL, dl, VTs,
                                           Ops, array_lengthof(Ops)));
       }
-    } else if (!IsSibCall) {
+    } else if (!isSibCall) {
       assert(VA.isMemLoc());
 
       MemOpChains.push_back(LowerMemOpCallTo(Chain, StackPtr, Arg,
@@ -1531,7 +1553,7 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                                RegsToPass[i].second, InFlag);
       InFlag = Chain.getValue(1);
     }
-    InFlag =SDValue();
+    InFlag = SDValue();
   }
 
   // If the callee is a GlobalAddress/ExternalSymbol node (quite common, every
@@ -1672,8 +1694,15 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                                   RegsToPass[i].second.getValueType()));
 
   // Add a register mask operand representing the call-preserved registers.
+  const uint32_t *Mask;
   const TargetRegisterInfo *TRI = getTargetMachine().getRegisterInfo();
-  const uint32_t *Mask = TRI->getCallPreservedMask(CallConv);
+  const ARMBaseRegisterInfo *ARI = static_cast<const ARMBaseRegisterInfo*>(TRI);
+  if (isThisReturn)
+    // For 'this' returns, use the R0-preserving mask
+    Mask = ARI->getThisReturnPreservedMask(CallConv);
+  else
+    Mask = ARI->getCallPreservedMask(CallConv);
+
   assert(Mask && "Missing call preserved mask for calling convention");
   Ops.push_back(DAG.getRegisterMask(Mask));
 
@@ -1695,8 +1724,9 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   // Handle result values, copying them out of physregs into vregs that we
   // return.
-  return LowerCallResult(Chain, InFlag, CallConv, isVarArg, Ins,
-                         dl, DAG, InVals);
+  return LowerCallResult(Chain, InFlag, CallConv, isVarArg, Ins, dl, DAG,
+                         InVals, isThisReturn,
+                         isThisReturn ? OutVals[0] : SDValue());
 }
 
 /// HandleByVal - Every parameter *after* a byval parameter is passed
@@ -1711,6 +1741,7 @@ ARMTargetLowering::HandleByVal(
           State->getCallOrPrologue() == Call) &&
          "unhandled ParmContext");
   if ((!State->isFirstByValRegValid()) &&
+      (!Subtarget->isAAPCS_ABI() || State->getNextStackOffset() == 0) &&
       (ARM::R0 <= reg) && (reg <= ARM::R3)) {
     if (Subtarget->isAAPCS_ABI() && Align > 4) {
       unsigned AlignInRegs = Align / 4;
@@ -2452,35 +2483,6 @@ ARMTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG,
   }
   }
 }
-
-static SDValue LowerMEMBARRIER(SDValue Op, SelectionDAG &DAG,
-                               const ARMSubtarget *Subtarget) {
-  DebugLoc dl = Op.getDebugLoc();
-  if (!Subtarget->hasDataBarrier()) {
-    // Some ARMv6 cpus can support data barriers with an mcr instruction.
-    // Thumb1 and pre-v6 ARM mode use a libcall instead and should never get
-    // here.
-    assert(Subtarget->hasV6Ops() && !Subtarget->isThumb() &&
-           "Unexpected ISD::MEMBARRIER encountered. Should be libcall!");
-    return DAG.getNode(ARMISD::MEMBARRIER_MCR, dl, MVT::Other, Op.getOperand(0),
-                       DAG.getConstant(0, MVT::i32));
-  }
-
-  SDValue Op5 = Op.getOperand(5);
-  bool isDeviceBarrier = cast<ConstantSDNode>(Op5)->getZExtValue() != 0;
-  unsigned isLL = cast<ConstantSDNode>(Op.getOperand(1))->getZExtValue();
-  unsigned isLS = cast<ConstantSDNode>(Op.getOperand(2))->getZExtValue();
-  bool isOnlyStoreBarrier = (isLL == 0 && isLS == 0);
-
-  ARM_MB::MemBOpt DMBOpt;
-  if (isDeviceBarrier)
-    DMBOpt = isOnlyStoreBarrier ? ARM_MB::ST : ARM_MB::SY;
-  else
-    DMBOpt = isOnlyStoreBarrier ? ARM_MB::ISHST : ARM_MB::ISH;
-  return DAG.getNode(ARMISD::MEMBARRIER, dl, MVT::Other, Op.getOperand(0),
-                     DAG.getConstant(DMBOpt, MVT::i32));
-}
-
 
 static SDValue LowerATOMIC_FENCE(SDValue Op, SelectionDAG &DAG,
                                  const ARMSubtarget *Subtarget) {
@@ -3431,6 +3433,47 @@ SDValue ARMTargetLowering::LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const {
                             MachinePointerInfo(),
                             false, false, false, 0);
   return FrameAddr;
+}
+
+/// Custom Expand long vector extensions, where size(DestVec) > 2*size(SrcVec),
+/// and size(DestVec) > 128-bits.
+/// This is achieved by doing the one extension from the SrcVec, splitting the
+/// result, extending these parts, and then concatenating these into the
+/// destination.
+static SDValue ExpandVectorExtension(SDNode *N, SelectionDAG &DAG) {
+  SDValue Op = N->getOperand(0);
+  EVT SrcVT = Op.getValueType();
+  EVT DestVT = N->getValueType(0);
+
+  assert(DestVT.getSizeInBits() > 128 &&
+         "Custom sext/zext expansion needs >128-bit vector.");
+  // If this is a normal length extension, use the default expansion.
+  if (SrcVT.getSizeInBits()*4 != DestVT.getSizeInBits() &&
+      SrcVT.getSizeInBits()*8 != DestVT.getSizeInBits())
+    return SDValue();
+
+  DebugLoc dl = N->getDebugLoc();
+  unsigned SrcEltSize = SrcVT.getVectorElementType().getSizeInBits();
+  unsigned DestEltSize = DestVT.getVectorElementType().getSizeInBits();
+  unsigned NumElts = SrcVT.getVectorNumElements();
+  LLVMContext &Ctx = *DAG.getContext();
+  SDValue Mid, SplitLo, SplitHi, ExtLo, ExtHi;
+
+  EVT MidVT = EVT::getVectorVT(Ctx, EVT::getIntegerVT(Ctx, SrcEltSize*2),
+                               NumElts);
+  EVT SplitVT = EVT::getVectorVT(Ctx, EVT::getIntegerVT(Ctx, SrcEltSize*2),
+                                 NumElts/2);
+  EVT ExtVT = EVT::getVectorVT(Ctx, EVT::getIntegerVT(Ctx, DestEltSize),
+                               NumElts/2);
+
+  Mid = DAG.getNode(N->getOpcode(), dl, MidVT, Op);
+  SplitLo = DAG.getNode(ISD::EXTRACT_SUBVECTOR, dl, SplitVT, Mid,
+                        DAG.getIntPtrConstant(0));
+  SplitHi = DAG.getNode(ISD::EXTRACT_SUBVECTOR, dl, SplitVT, Mid,
+                        DAG.getIntPtrConstant(NumElts/2));
+  ExtLo = DAG.getNode(N->getOpcode(), dl, ExtVT, SplitLo);
+  ExtHi = DAG.getNode(N->getOpcode(), dl, ExtVT, SplitHi);
+  return DAG.getNode(ISD::CONCAT_VECTORS, dl, DestVT, ExtLo, ExtHi);
 }
 
 /// ExpandBITCAST - If the target supports VFP, this function is called to
@@ -5565,7 +5608,6 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::BR_CC:         return LowerBR_CC(Op, DAG);
   case ISD::BR_JT:         return LowerBR_JT(Op, DAG);
   case ISD::VASTART:       return LowerVASTART(Op, DAG);
-  case ISD::MEMBARRIER:    return LowerMEMBARRIER(Op, DAG, Subtarget);
   case ISD::ATOMIC_FENCE:  return LowerATOMIC_FENCE(Op, DAG, Subtarget);
   case ISD::PREFETCH:      return LowerPREFETCH(Op, DAG, Subtarget);
   case ISD::SINT_TO_FP:
@@ -5620,6 +5662,10 @@ void ARMTargetLowering::ReplaceNodeResults(SDNode *N,
     llvm_unreachable("Don't know how to custom expand this!");
   case ISD::BITCAST:
     Res = ExpandBITCAST(N, DAG);
+    break;
+  case ISD::SIGN_EXTEND:
+  case ISD::ZERO_EXTEND:
+    Res = ExpandVectorExtension(N, DAG);
     break;
   case ISD::SRL:
   case ISD::SRA:

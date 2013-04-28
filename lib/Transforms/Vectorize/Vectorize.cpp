@@ -1,4 +1,4 @@
-   //===-- Vectorize.cpp -----------------------------------------------------===//
+//===-- Vectorize.cpp -----------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -20,6 +20,7 @@
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/PassManager.h"
+#include "llvm/Wrap.h"
 
 using namespace llvm;
 
@@ -28,6 +29,7 @@ using namespace llvm;
 void llvm::initializeVectorization(PassRegistry &Registry) {
   initializeBBVectorizePass(Registry);
   initializeLoopVectorizePass(Registry);
+  initializeSLPVectorizerPass(Registry);
 }
 
 void LLVMInitializeVectorization(LLVMPassRegistryRef R) {
@@ -40,4 +42,8 @@ void LLVMAddBBVectorizePass(LLVMPassManagerRef PM) {
 
 void LLVMAddLoopVectorizePass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createLoopVectorizePass());
+}
+
+void LLVMAddSLPVectorizePass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createSLPVectorizerPass());
 }

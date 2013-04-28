@@ -1872,13 +1872,6 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
     visitInlineAsm(&I);
   else if (Fn && Fn->isIntrinsic()) {
     assert(Fn->getIntrinsicID() == Intrinsic::donothing);
-    // If donothing has a landingpad, we should clear CurrentCallSite.
-    if (LandingPad) {
-      MachineModuleInfo &MMI = DAG.getMachineFunction().getMMI();
-      unsigned CallSiteIndex = MMI.getCurrentCallSite();
-      if (CallSiteIndex)
-        MMI.setCurrentCallSite(0);
-    }
     // Ignore invokes to @llvm.donothing: jump directly to the next BB.
   } else
     LowerCallTo(&I, getValue(Callee), false, LandingPad);
@@ -4921,7 +4914,6 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   case Intrinsic::fmuladd: {
     EVT VT = TLI.getValueType(I.getType());
     if (TM.Options.AllowFPOpFusion != FPOpFusion::Strict &&
-        TLI.isOperationLegalOrCustom(ISD::FMA, VT) &&
         TLI.isFMAFasterThanMulAndAdd(VT)){
       setValue(&I, DAG.getNode(ISD::FMA, dl,
                                getValue(I.getArgOperand(0)).getValueType(),
@@ -5240,6 +5232,7 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
     Entry.isSRet = true;
     Entry.isNest = false;
     Entry.isByVal = false;
+    Entry.isReturned = false;
     Entry.Alignment = Align;
     Args.push_back(Entry);
     RetTy = Type::getVoidTy(FTy->getContext());
@@ -5257,13 +5250,14 @@ void SelectionDAGBuilder::LowerCallTo(ImmutableCallSite CS, SDValue Callee,
     Entry.Node = ArgNode; Entry.Ty = V->getType();
 
     unsigned attrInd = i - CS.arg_begin() + 1;
-    Entry.isSExt  = CS.paramHasAttr(attrInd, Attribute::SExt);
-    Entry.isZExt  = CS.paramHasAttr(attrInd, Attribute::ZExt);
-    Entry.isInReg = CS.paramHasAttr(attrInd, Attribute::InReg);
-    Entry.isSRet  = CS.paramHasAttr(attrInd, Attribute::StructRet);
-    Entry.isNest  = CS.paramHasAttr(attrInd, Attribute::Nest);
-    Entry.isByVal = CS.paramHasAttr(attrInd, Attribute::ByVal);
-    Entry.Alignment = CS.getParamAlignment(attrInd);
+    Entry.isSExt     = CS.paramHasAttr(attrInd, Attribute::SExt);
+    Entry.isZExt     = CS.paramHasAttr(attrInd, Attribute::ZExt);
+    Entry.isInReg    = CS.paramHasAttr(attrInd, Attribute::InReg);
+    Entry.isSRet     = CS.paramHasAttr(attrInd, Attribute::StructRet);
+    Entry.isNest     = CS.paramHasAttr(attrInd, Attribute::Nest);
+    Entry.isByVal    = CS.paramHasAttr(attrInd, Attribute::ByVal);
+    Entry.isReturned = CS.paramHasAttr(attrInd, Attribute::Returned);
+    Entry.Alignment  = CS.getParamAlignment(attrInd);
     Args.push_back(Entry);
   }
 
@@ -6177,10 +6171,17 @@ void SelectionDAGBuilder::visitInlineAsm(ImmutableCallSite CS) {
           MatchedRegs.RegVTs.push_back(RegVT);
           MachineRegisterInfo &RegInfo = DAG.getMachineFunction().getRegInfo();
           for (unsigned i = 0, e = InlineAsm::getNumOperandRegisters(OpFlag);
-               i != e; ++i)
-            MatchedRegs.Regs.push_back
-              (RegInfo.createVirtualRegister(TLI.getRegClassFor(RegVT)));
-
+               i != e; ++i) {
+            if (const TargetRegisterClass *RC = TLI.getRegClassFor(RegVT))
+              MatchedRegs.Regs.push_back(RegInfo.createVirtualRegister(RC));
+            else {
+              LLVMContext &Ctx = *DAG.getContext();
+              Ctx.emitError(CS.getInstruction(), "inline asm error: This value"
+                            " type register class is not natively supported!");
+              report_fatal_error("inline asm error: This value type register "
+                                 "class is not natively supported!");
+            }
+          }
           // Use the produced MatchedRegs object to
           MatchedRegs.getCopyToRegs(InOperandVal, DAG, getCurDebugLoc(),
                                     Chain, &Flag, CS.getInstruction());
@@ -6438,6 +6439,8 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
       }
       if (Args[i].isNest)
         Flags.setNest();
+      if (Args[i].isReturned)
+        Flags.setReturned();
       Flags.setOrigAlign(OriginalAlignment);
 
       MVT PartVT = getRegisterType(CLI.RetTy->getContext(), VT);

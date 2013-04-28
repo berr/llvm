@@ -27,6 +27,7 @@ namespace llvm {
 
       CONST32,
       CONST32_GP,  // For marking data present in GP.
+      CONST32_Int_Real,
       FCONST32,
       SETCC,
       ADJDYNALLOC,
@@ -106,6 +107,7 @@ namespace llvm {
                                  DebugLoc dl, SelectionDAG &DAG,
                                  SmallVectorImpl<SDValue> &InVals) const;
     SDValue LowerGLOBALADDRESS(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerBlockAddress(SDValue Op, SelectionDAG &DAG) const;
 
     SDValue LowerCall(TargetLowering::CallLoweringInfo &CLI,
                       SmallVectorImpl<SDValue> &InVals) const;
@@ -120,7 +122,6 @@ namespace llvm {
 
     SDValue LowerSELECT_CC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerMEMBARRIER(SDValue Op, SelectionDAG& DAG) const;
     SDValue LowerATOMIC_FENCE(SDValue Op, SelectionDAG& DAG) const;
     SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
 

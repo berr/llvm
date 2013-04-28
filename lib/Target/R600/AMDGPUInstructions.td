@@ -94,6 +94,7 @@ class Constants {
 int TWO_PI = 0x40c90fdb;
 int PI = 0x40490fdb;
 int TWO_PI_INV = 0x3e22f983;
+int FP_UINT_MAX_PLUS_1 = 0x4f800000;	// 1 << 32 in floating point encoding
 }
 def CONST : Constants;
 
@@ -130,13 +131,6 @@ class FNEG <RegisterClass rc> : AMDGPUShaderInst <
   (ins rc:$src0),
   "FNEG $dst, $src0",
   [(set rc:$dst, (fneg rc:$src0))]
->;
-
-def SHADER_TYPE : AMDGPUShaderInst <
-  (outs),
-  (ins i32imm:$type),
-  "SHADER_TYPE $type",
-  [(int_AMDGPU_shader_type imm:$type)]
 >;
 
 } // usesCustomInserter = 1
@@ -209,8 +203,8 @@ class Vector2_Build <ValueType vecType, RegisterClass vectorClass,
   (vecType (IMPLICIT_DEF)), elemClass:$sub0, sub0), elemClass:$sub1, sub1)
 >;
 
-class Vector_Build <ValueType vecType, RegisterClass vectorClass,
-                    ValueType elemType, RegisterClass elemClass> : Pat <
+class Vector4_Build <ValueType vecType, RegisterClass vectorClass,
+                     ValueType elemType, RegisterClass elemClass> : Pat <
   (vecType (build_vector (elemType elemClass:$x), (elemType elemClass:$y),
                          (elemType elemClass:$z), (elemType elemClass:$w))),
   (INSERT_SUBREG (INSERT_SUBREG (INSERT_SUBREG (INSERT_SUBREG
@@ -266,6 +260,26 @@ class DwordAddrPat<ValueType vt, RegisterClass rc> : Pat <
   (vt (AMDGPUdwordaddr (vt rc:$addr))),
   (vt rc:$addr)
 >;
+
+// BFI_INT patterns
+
+multiclass BFIPatterns <Instruction BFI_INT> {
+
+  // Definition from ISA doc:
+  // (y & x) | (z & ~x)
+  def : Pat <
+    (or (and i32:$y, i32:$x), (and i32:$z, (not i32:$x))),
+    (BFI_INT $x, $y, $z)
+  >;
+
+  // SHA-256 Ch function
+  // z ^ (x & (y ^ z))
+  def : Pat <
+    (xor i32:$z, (and i32:$x, (xor i32:$y, i32:$z))),
+    (BFI_INT $x, $y, $z)
+  >;
+
+}
 
 include "R600Instructions.td"
 
