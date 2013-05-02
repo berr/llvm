@@ -156,6 +156,7 @@ struct RAIARegister{
 
   RAIARegister(LiveInterval& Register) : Reg(Register), Value(0) { }
 
+  virtual ~RAIARegister() { }
 
 };
 
@@ -179,6 +180,15 @@ static void randomizeOrder(std::vector<RAIARegister*>& values){
 
     current->Value = std::rand();
 
+  }
+
+}
+
+static void clearSequence(std::vector<RAIARegister*>& sequence) {
+  while(sequence.size()) {
+    RAIARegister* reg = sequence.back();
+    sequence.pop_back();
+    delete reg;
   }
 
 }
@@ -264,33 +274,6 @@ void RAIA::allocatePhysRegs() {
   double fitness[NUMBER_OF_SOURCES];
 
   int iterations = 0;
-  bool alocated = false;
-
-  DEBUG(dbgs() << "Before loop!" << "\n");
-  // generate initial sequences
-  for (unsigned i = 0, e = MRI->getNumVirtRegs(); i != e; ++i) {
-    DEBUG(dbgs() << "On loop! " << i << "\n");
-    unsigned Reg = TargetRegisterInfo::index2VirtReg(i);
-
-    // Register only used for debug instructions, we can ignore it
-    if (MRI->reg_nodbg_empty(Reg)){
-      DEBUG(dbgs() << "Doing nothing for register: " << Reg << "\n");
-      continue;
-    }
-
-    DEBUG(dbgs() << "Getting interval for register: " << Reg << "\n");
-    LiveInterval& VirtReg = LIS->getInterval(Reg);
-
-    for (int i = 0; i < NUMBER_OF_SOURCES; ++i){
-      sources[i].push_back(new RAIARegister(VirtReg));
-    }
-
-  }
-
-  // sort the initial sequences
-  for (int i = 0; i < NUMBER_OF_SOURCES; ++i){
-    sortSequence(sources[i]);
-  }
 
 
 
@@ -299,8 +282,38 @@ void RAIA::allocatePhysRegs() {
   // Main allocation loop, stay here until we find a solution
   while (true) {
 
+    Matrix->invalidateVirtRegs();
+
+    // generate initial sequences
+    for (unsigned i = 0, e = MRI->getNumVirtRegs(); i != e; ++i) {
+      unsigned Reg = TargetRegisterInfo::index2VirtReg(i);
+
+      // Register only used for debug instructions, we can ignore it
+      if (MRI->reg_nodbg_empty(Reg)){
+        DEBUG(dbgs() << "Doing nothing for register: " << Reg << "\n");
+        continue;
+      }
+
+      LiveInterval& VirtReg = LIS->getInterval(Reg);
+
+      for (int i = 0; i < NUMBER_OF_SOURCES; ++i){
+        sources[i].push_back(new RAIARegister(VirtReg));
+      }
+
+    }
+
+    Matrix->invalidateVirtRegs();
+
+
+    for (int i = 0; i < NUMBER_OF_SOURCES; ++i){
+      randomizeOrder(sources[i]);
+      sortSequence(sources[i]);
+    }
+
+
     iterations = 0;
     LiveInterval* BestGlobalSpillCandidate = 0;
+
 
     while (iterations < MAX_ITERATIONS) {
       DEBUG(dbgs() << "Allocating iteration: " << iterations << "\n");
@@ -308,6 +321,7 @@ void RAIA::allocatePhysRegs() {
 
       // Check if any of the sources meet the allocation criteria.
       for (int source_index = 0; source_index < NUMBER_OF_SOURCES; ++source_index){
+        DEBUG(dbgs() << "Trying sequence number: " << source_index << "\n");
 
         std::vector<RAIARegister*> source = sources[source_index];
         int size = sources[source_index].size();
@@ -321,52 +335,78 @@ void RAIA::allocatePhysRegs() {
 
           if (MRI->reg_nodbg_empty(current->Reg.reg)) {
             LIS->removeInterval(current->Reg.reg);
-            // Invalidate previous results, since we may have changed live ranges
+            Matrix->invalidateVirtRegs();
+            continue;
           }
+
+
+          if (allocateOrGetBestSpillable(current->Reg, &Spillable, ScratchPad)){
+            continue;
+          }
+
+
+          // We Could not allocate.
+
+          // Do a generic update of the fitness of this Sequence
+          fitness[source_index] = (float)(i) / size;
+
+
+          // Dead end, we can not even split a live range.
+          if (Spillable == 0){
+            // Just notify, so we can generate another sequence
+            fitness[source_index] = 0;
+            DEBUG(dbgs() << "Unable to alloc for" << current->Reg << "\n");
+          }
+
+          // We found an interference.
+          // Get the suggested spill LiveInterval and check if it has a lower cost than
+          // the one we had before (if we had any).
+          if (! BestGlobalSpillCandidate || BestGlobalSpillCandidate->weight > Spillable->weight){
+            BestGlobalSpillCandidate = Spillable;
+            DEBUG(dbgs() << "Updating BestCandidateToSpill: " << *BestGlobalSpillCandidate << "\n");
+          }
+
+
+          DEBUG(dbgs() << "Could not allocate! Undoing changes" << "\n");
+
+          for (int j = 0; j < i; ++j){
+            // Since we modified the LiveRangeMatrix, we have to undo all changes
+            // The last element wasn't assigned
+            RAIARegister* current = sources[source_index][j];
+
+            LiveInterval& virtualReg = current->Reg;
+
+            if (!MRI->reg_nodbg_empty(virtualReg.reg) && LIS->hasInterval(virtualReg.reg)){
+              DEBUG(dbgs() << "Unassigning: " << current->Reg << "\n");
+              Matrix->unassign(current->Reg);
+            }
+
+          }
+
+          // We changed it a lot
           Matrix->invalidateVirtRegs();
 
-          if (!allocateOrGetBestSpillable(current->Reg, &Spillable, ScratchPad)){
-            // Do a generic update of the fitness of this Sequence
-            fitness[source_index] = (float)(i) / size;
+          // We're done with this sequence.
+          allocated = false;
+          break;
 
-            alocated = false;
-
-            // Dead end, we can not even split a live range.
-            if (Spillable == 0){
-              // Just notify, so we can generate another sequence
-              fitness[source_index] = 0;
-              DEBUG(dbgs() << "Unable to alloc for" << current->Reg << "\n");
-            }
-
-            // We found an interference.
-            // Get the suggested spill LiveInterval and check if it has a lower cost than
-            // the one we had before (if we had any).
-            if (! BestGlobalSpillCandidate || BestGlobalSpillCandidate->weight > Spillable->weight){
-              BestGlobalSpillCandidate = Spillable;
-              DEBUG(dbgs() << "Updating BestCandidateToSpill: " << *BestGlobalSpillCandidate << "\n");
-            }
-
-            // We're done with this sequence.
-            break;
-          }
         }
+
 
         // Found a possible allocation!
         if (allocated){
           DEBUG(dbgs() << "Successfull allocation!" << "\n");
+
+
+          DEBUG(dbgs() << "Cleaning up sequences!" << "\n");
+          for (int source_index = 0; source_index < NUMBER_OF_SOURCES; ++source_index){
+              clearSequence(sources[source_index]);
+          }
+
           return;
         }
 
-        // Since we modified the LiveRangeMatrix, we have to undo all changes
-        // The last element wasn't assigned
-        for (int j = 0; j < (i - 1); ++j){
-          RAIARegister* current = sources[source_index][j];
 
-          Matrix->unassign(current->Reg);
-        }
-
-        // We changed it a lot
-        Matrix->invalidateVirtRegs();
       }
 
 
@@ -386,10 +426,16 @@ void RAIA::allocatePhysRegs() {
 
     assert(BestGlobalSpillCandidate && "Allocation Failed because we can't spill");
 
-    DEBUG(dbgs() << "Trying to spill: " << *BestGlobalSpillCandidate << " Dissatisfied\n");
+    DEBUG(dbgs() << "Trying to spill: " << *BestGlobalSpillCandidate << "\n");
     LiveRangeScratchPad.clear();
     LiveRangeEdit LRE(BestGlobalSpillCandidate, LiveRangeScratchPad, *MF, *LIS, VRM);
     spiller().spill(LRE);
+
+    DEBUG(dbgs() << "Cleaning up sequences!" << "\n");
+    for (int source_index = 0; source_index < NUMBER_OF_SOURCES; ++source_index){
+      clearSequence(sources[source_index]);
+    }
+
 
   }
 
