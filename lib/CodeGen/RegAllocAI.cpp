@@ -24,6 +24,8 @@
 #include <cstdlib>
 #include <vector>
 
+
+
 using namespace llvm;
 
 static RegisterRegAlloc basicRegAlloc("ai", "ai register allocator", createAIRegisterAllocator);
@@ -193,6 +195,22 @@ static void clearSequence(std::vector<RAIARegister*>& sequence) {
 
 }
 
+
+static void findNeighborSequence(std::vector<RAIARegister*>& sequence, std::vector<RAIARegister*>& scratch) {
+  randomizeOrder(scratch);
+  sortSequence(scratch);
+
+  int pos = std::rand() % sequence.size();
+
+
+  RAIARegister* old_selected = sequence[pos];
+  RAIARegister* new_selected = scratch[pos];
+
+  old_selected->Value = abs(old_selected->Value + (abs(old_selected->Value - new_selected->Value) * (std::rand() - (RAND_MAX / 2))));
+
+  return;
+}
+
 namespace {
 
 const int MAX_ITERATIONS = 5;
@@ -270,7 +288,8 @@ void RAIA::allocatePhysRegs() {
 
   DEBUG(dbgs() << "Allocating using AI!" << "\n");
 
-  std::vector<RAIARegister*> sources[NUMBER_OF_SOURCES];
+  // One more sequence to use as a scratch pad.
+  std::vector<RAIARegister*> sources[NUMBER_OF_SOURCES + 1];
   double fitness[NUMBER_OF_SOURCES];
 
   int iterations = 0;
@@ -296,7 +315,8 @@ void RAIA::allocatePhysRegs() {
 
       LiveInterval& VirtReg = LIS->getInterval(Reg);
 
-      for (int i = 0; i < NUMBER_OF_SOURCES; ++i){
+      // initialize the scratch pad
+      for (int i = 0; i < NUMBER_OF_SOURCES + 1; ++i){
         sources[i].push_back(new RAIARegister(VirtReg));
       }
 
@@ -399,7 +419,7 @@ void RAIA::allocatePhysRegs() {
 
 
           DEBUG(dbgs() << "Cleaning up sequences!" << "\n");
-          for (int source_index = 0; source_index < NUMBER_OF_SOURCES; ++source_index){
+          for (int source_index = 0; source_index < NUMBER_OF_SOURCES + 1; ++source_index){
               clearSequence(sources[source_index]);
           }
 
@@ -418,6 +438,7 @@ void RAIA::allocatePhysRegs() {
         }
         else {
           // Find a neighboor solution
+          findNeighborSequence(sources[source_index], sources[NUMBER_OF_SOURCES]);
         }
       }
 
@@ -432,7 +453,7 @@ void RAIA::allocatePhysRegs() {
     spiller().spill(LRE);
 
     DEBUG(dbgs() << "Cleaning up sequences!" << "\n");
-    for (int source_index = 0; source_index < NUMBER_OF_SOURCES; ++source_index){
+    for (int source_index = 0; source_index < NUMBER_OF_SOURCES + 1; ++source_index){
       clearSequence(sources[source_index]);
     }
 
