@@ -4,6 +4,7 @@
 #include "LiveDebugVariables.h"
 #include "RegAllocBase.h"
 #include "Spiller.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
@@ -17,6 +18,7 @@
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/PassAnalysisSupport.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -29,6 +31,17 @@
 using namespace llvm;
 
 static RegisterRegAlloc basicRegAlloc("ai", "ai register allocator", createAIRegisterAllocator);
+
+static cl::opt<unsigned>
+NumberOfSequences("number-of-sequences", cl::init(1), cl::Hidden,
+  cl::desc("Number of sequences to use on AI Register Allocation"));
+
+static cl::opt<unsigned>
+MaxIterations("max-iterations", cl::init(1), cl::Hidden,
+  cl::desc("Maximum number of iterations before assuming the graph isn't colarable"));
+
+
+STATISTIC(NumDrops, "Number of sequences dropped");
 
 namespace {
   struct CompSpillWeight {
@@ -211,14 +224,7 @@ static void findNeighborSequence(std::vector<RAIARegister*>& sequence, std::vect
   return;
 }
 
-namespace {
 
-const int MAX_ITERATIONS = 5;
-const int NUMBER_OF_BEES = 10;
-const int NUMBER_OF_SOURCES = NUMBER_OF_BEES / 2;
-
-
-}
 
 bool RAIA::allocateOrGetBestSpillable(LiveInterval& VirtReg, LiveInterval** Spillable, SmallVectorImpl<unsigned>& PhysRegSpillCands){
   AllocationOrder Order(VirtReg.reg, *VRM, RegClassInfo);
@@ -289,10 +295,10 @@ void RAIA::allocatePhysRegs() {
   DEBUG(dbgs() << "Allocating using AI!" << "\n");
 
   // One more sequence to use as a scratch pad.
-  std::vector<RAIARegister*> sources[NUMBER_OF_SOURCES + 1];
-  double fitness[NUMBER_OF_SOURCES];
+  std::vector<RAIARegister*>* sources = new std::vector<RAIARegister*>[NumberOfSequences + 1];
+  double* fitness = new double[NumberOfSequences];
 
-  int iterations = 0;
+  unsigned iterations = 0;
 
 
 
@@ -316,7 +322,7 @@ void RAIA::allocatePhysRegs() {
       LiveInterval& VirtReg = LIS->getInterval(Reg);
 
       // initialize the scratch pad
-      for (int i = 0; i < NUMBER_OF_SOURCES + 1; ++i){
+      for (unsigned i = 0; i < NumberOfSequences + 1; ++i){
         sources[i].push_back(new RAIARegister(VirtReg));
       }
 
@@ -325,7 +331,7 @@ void RAIA::allocatePhysRegs() {
     Matrix->invalidateVirtRegs();
 
 
-    for (int i = 0; i < NUMBER_OF_SOURCES; ++i){
+    for (unsigned i = 0; i < NumberOfSequences; ++i){
       randomizeOrder(sources[i]);
       sortSequence(sources[i]);
     }
@@ -335,12 +341,12 @@ void RAIA::allocatePhysRegs() {
     LiveInterval* BestGlobalSpillCandidate = 0;
 
 
-    while (iterations < MAX_ITERATIONS) {
+    while (iterations < MaxIterations) {
       DEBUG(dbgs() << "Allocating iteration: " << iterations << "\n");
 
 
       // Check if any of the sources meet the allocation criteria.
-      for (int source_index = 0; source_index < NUMBER_OF_SOURCES; ++source_index){
+      for (unsigned source_index = 0; source_index < NumberOfSequences; ++source_index){
         DEBUG(dbgs() << "Trying sequence number: " << source_index << "\n");
 
         std::vector<RAIARegister*> source = sources[source_index];
@@ -419,10 +425,13 @@ void RAIA::allocatePhysRegs() {
 
 
           DEBUG(dbgs() << "Cleaning up sequences!" << "\n");
-          for (int source_index = 0; source_index < NUMBER_OF_SOURCES + 1; ++source_index){
+          for (unsigned source_index = 0; source_index < NumberOfSequences + 1; ++source_index){
               clearSequence(sources[source_index]);
           }
 
+	  delete [] sources;
+	  delete [] fitness;
+	  
           return;
         }
 
@@ -430,15 +439,16 @@ void RAIA::allocatePhysRegs() {
       }
 
 
-      for (int source_index = 0; source_index < NUMBER_OF_SOURCES; ++source_index){
+      for (unsigned source_index = 0; source_index < NumberOfSequences; ++source_index){
 
         if (fitness[source_index] < 0.2) {
           DEBUG(dbgs() << "Source: " << source_index << " Dissatisfied\n");
           randomizeOrder(sources[source_index]);
+	  ++NumDrops;
         }
         else {
           // Find a neighboor solution
-          findNeighborSequence(sources[source_index], sources[NUMBER_OF_SOURCES]);
+          findNeighborSequence(sources[source_index], sources[NumberOfSequences]);
         }
       }
 
@@ -453,7 +463,7 @@ void RAIA::allocatePhysRegs() {
     spiller().spill(LRE);
 
     DEBUG(dbgs() << "Cleaning up sequences!" << "\n");
-    for (int source_index = 0; source_index < NUMBER_OF_SOURCES + 1; ++source_index){
+    for (unsigned source_index = 0; source_index < NumberOfSequences + 1; ++source_index){
       clearSequence(sources[source_index]);
     }
 
