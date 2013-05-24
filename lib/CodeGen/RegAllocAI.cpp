@@ -24,6 +24,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include <cstdlib>
+#include <ctime>
 #include <vector>
 
 
@@ -293,6 +294,8 @@ bool RAIA::allocateOrGetBestSpillable(LiveInterval& VirtReg, LiveInterval** Spil
 void RAIA::allocatePhysRegs() {
 
   DEBUG(dbgs() << "Allocating using AI!" << "\n");
+
+  std::srand(std::time(0));
 
   // One more sequence to use as a scratch pad.
   std::vector<RAIARegister*>* sources = new std::vector<RAIARegister*>[NumberOfSequences + 1];
